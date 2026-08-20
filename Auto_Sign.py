@@ -19,6 +19,8 @@ from urllib import parse
 
 import requests
 
+from SecuritySm import clear_device_id_cache, get_device_id
+
 # 尝试导入青龙面板的notify模块，如果不存在则跳过
 try:
     import notify
@@ -31,10 +33,13 @@ except ImportError:
 # 从环境变量获取配置
 SKYLAND_TOKEN = os.getenv('SKYLAND_TOKEN') or os.getenv('TOKEN') or ''
 SKYLAND_NOTIFY = os.getenv('SKYLAND_NOTIFY') or ''
+SKYLAND_DID = os.getenv('SKYLAND_DID') or ''
 
 # 消息内容
 run_message = ''
 account_num = 1
+device_id = ''
+use_configured_device_id = True
 
 # 请求头配置
 header = {
@@ -74,11 +79,48 @@ grant_code_url = "https://as.hypergryph.com/user/oauth2/v2/grant"
 
 app_code = '4ca99fa6b56cc2ba'
 
+
+class InvalidDeviceError(Exception):
+    """服务端拒绝当前设备 ID。"""
+
 # ==================== 日志配置 ====================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+
+def ensure_device_id():
+    """初始化并复用登录、换取cred和请求签名所需的设备ID。"""
+    global device_id
+    if not device_id:
+        configured_device_id = SKYLAND_DID if use_configured_device_id else ''
+        device_id = get_device_id(configured_device_id)
+        header_login['dId'] = device_id
+        header_for_sign['dId'] = device_id
+        logging.info('设备ID初始化成功')
+    return device_id
+
+
+def get_login_header():
+    ensure_device_id()
+    return header_login.copy()
+
+
+def renew_device_id():
+    """清除失效设备 ID；下一次请求会生成新的随机 ID。"""
+    global device_id, use_configured_device_id
+    device_id = ''
+    use_configured_device_id = False
+    header_login.pop('dId', None)
+    header_for_sign['dId'] = ''
+    clear_device_id_cache()
+    logging.warning('设备ID已失效，正在重新生成并重试认证')
+
+
+def is_invalid_device_response(resp: dict):
+    message = str(resp.get('message') or resp.get('msg') or '')
+    return '设备信息无效' in message
 
 
 # ==================== 推送通知函数 ====================
@@ -138,6 +180,7 @@ def generate_signature(token: str, path: str, body_or_query: str):
     :param body_or_query: GET请求的query或POST请求的body
     :return: 计算完毕的sign和header
     """
+    ensure_device_id()
     # 时间戳-2秒，避免服务器时间校验问题
     t = str(int(time.time()) - 2)
     token_bytes = token.encode('utf-8')
@@ -213,10 +256,13 @@ def get_grant_code(token: str):
         'appCode': app_code,
         'token': token,
         'type': 0
-    }, headers=header_login).json()
+    }, headers=get_login_header()).json()
 
     if resp.get('status') != 0:
-        raise Exception(f'使用token获得认证代码失败: {resp.get("msg")}')
+        message = resp.get('msg') or resp.get('message')
+        if is_invalid_device_response(resp):
+            raise InvalidDeviceError(f'使用token获得认证代码失败: {message}')
+        raise Exception(f'使用token获得认证代码失败: {message}')
     return resp['data']['code']
 
 
@@ -227,10 +273,13 @@ def get_cred(grant: str):
     resp = requests.post(cred_code_url, json={
         'code': grant,
         'kind': 1
-    }, headers=header_login).json()
+    }, headers=get_login_header()).json()
 
     if resp['code'] != 0:
-        raise Exception(f'获得cred失败: {resp.get("message")}')
+        message = resp.get('message') or resp.get('msg')
+        if is_invalid_device_response(resp):
+            raise InvalidDeviceError(f'获得cred失败: {message}')
+        raise Exception(f'获得cred失败: {message}')
 
     global sign_token
     sign_token = resp['data']['token']
@@ -242,8 +291,16 @@ def login_by_token(token_code: str):
     通过token登录森空岛获取认证
     """
     token_code = parse_user_token(token_code)
-    grant_code = get_grant_code(token_code)
-    return get_cred(grant_code)
+    for attempt in range(2):
+        try:
+            grant_code = get_grant_code(token_code)
+            return get_cred(grant_code)
+        except InvalidDeviceError:
+            if attempt > 0:
+                raise
+            renew_device_id()
+
+    raise RuntimeError('设备ID更新后认证仍然失败')
 
 
 # ==================== 签到相关函数 ====================
@@ -410,6 +467,15 @@ def main():
     if not token_list:
         error_msg = '没有设置TOKEN，请先运行Get_Token.py获取并创建SKYLAND_TOKEN'
         logging.error(error_msg)
+        run_message = error_msg
+        send_message('森空岛签到', run_message, SKYLAND_NOTIFY)
+        return
+
+    try:
+        ensure_device_id()
+    except Exception as ex:
+        error_msg = f'设备ID初始化失败: {ex}'
+        logging.error(error_msg, exc_info=True)
         run_message = error_msg
         send_message('森空岛签到', run_message, SKYLAND_NOTIFY)
         return

@@ -1,4 +1,4 @@
-# 森空岛签到
+# 森空岛签到 - 青龙面板版
 
 用于森空岛绑定角色签到，支持明日方舟和终末地。项目拆分为两个脚本：
 
@@ -8,8 +8,11 @@
 ## 依赖
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 ```
+
+签到接口现在会校验设备信息。脚本会自动向设备指纹服务申请有效的 `dId`，因此
+除 `requests` 外还需要 `cryptography`。
 
 如果希望在终端里直接显示二维码：
 
@@ -18,6 +21,17 @@ pip install qrcode
 ```
 
 未安装 `qrcode` 时，脚本会输出二维码图片链接。
+
+## 设备 ID 与自动恢复
+
+- 默认不需要配置 `SKYLAND_DID`，每个脚本进程都会独立随机生成设备指纹，
+  不同使用者不会共用固定设备 ID。
+- 同一次运行中的多个账号会复用当前 `dId`，脚本退出后不会持久保存。
+- 如果服务端返回“设备信息无效”，脚本会清除旧 ID、重新随机生成，并自动
+  重试一次认证流程。
+- 如果重新生成后仍然失败，脚本会停止重试并输出错误，避免异常情况下无限请求。
+- 如需手动复用已有设备 ID，可设置 `SKYLAND_DID`；该值必须由设备指纹服务
+  签发并以 `B` 开头，不能填写普通 UUID。
 
 ## 青龙面板使用
 
@@ -103,9 +117,9 @@ SKYLAND_TOKEN=token1;token2;token3
 
 获取多个账号 Token 时，重复运行 `Get_Token.py`，分别扫码或登录不同账号。
 
-如果配置了青龙 OpenAPI，脚本会自动把新 Token 追加到同一个 `SKYLAND_TOKEN` 变量里，而不是创建多个同名变量。同名变量在青龙运行时通常只会导出其中一个，不适合多账号。
+如果配置了青龙 OpenAPI，脚本会先查找已有的 `SKYLAND_TOKEN`。如果已存在，会把新 Token 用分号追加到旧值后面；如果不存在，才会创建新的 `SKYLAND_TOKEN`。
 
-如果之前生成过错误的短 Token，请删除旧的同名 `SKYLAND_TOKEN` 变量后重新运行 `Get_Token.py`。
+如果之前生成过错误的短 Token，请删除旧的 `SKYLAND_TOKEN` 变量后重新运行 `Get_Token.py`。
 
 ## 物理机运行
 
@@ -142,6 +156,10 @@ SKYLAND_QR_WAIT=180
 
 # 扫码状态查询间隔，单位秒
 SKYLAND_QR_INTERVAL=2
+
+# 可选：复用已有设备ID；必须是设备指纹服务签发、以B开头的值
+# 留空时脚本会自动生成，不要填写普通UUID
+SKYLAND_DID=
 
 # 签到推送类型，依赖青龙notify
 SKYLAND_NOTIFY=

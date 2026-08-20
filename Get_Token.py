@@ -11,15 +11,16 @@ import logging
 import os
 import sys
 import time
-import uuid
 from getpass import getpass
 from urllib import parse
 
 import requests
 
+from SecuritySm import clear_device_id_cache, get_device_id
+
 APP_CODE = '4ca99fa6b56cc2ba'
 
-SKYLAND_DID = os.getenv('SKYLAND_DID') or uuid.uuid4().hex
+SKYLAND_DID = os.getenv('SKYLAND_DID') or ''
 SKYLAND_QR_WAIT = int(os.getenv('SKYLAND_QR_WAIT') or '180')
 SKYLAND_QR_INTERVAL = int(os.getenv('SKYLAND_QR_INTERVAL') or '2')
 SKYLAND_ENV_NAME = os.getenv('SKYLAND_ENV_NAME') or 'SKYLAND_TOKEN'
@@ -46,14 +47,56 @@ HEADER_LOGIN = {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 12; SM-A5560 Build/V417IR; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/101.0.4951.61 Safari/537.36; SKLand/1.52.1',
     'Accept-Encoding': 'gzip',
     'Connection': 'close',
-    'dId': SKYLAND_DID,
     'X-Requested-With': 'com.hypergryph.skland'
 }
+
+_resolved_device_id = ''
+_use_configured_device_id = True
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+
+def get_login_headers():
+    """获取带有效设备ID的登录请求头。"""
+    global _resolved_device_id
+    if not _resolved_device_id:
+        configured_device_id = SKYLAND_DID if _use_configured_device_id else ''
+        _resolved_device_id = get_device_id(configured_device_id)
+        logging.info('设备ID初始化成功')
+    headers = HEADER_LOGIN.copy()
+    headers['dId'] = _resolved_device_id
+    return headers
+
+
+def renew_device_id():
+    """丢弃失效设备 ID，并让下一次登录请求重新随机生成。"""
+    global _resolved_device_id, _use_configured_device_id
+    _resolved_device_id = ''
+    _use_configured_device_id = False
+    clear_device_id_cache()
+    logging.warning('设备ID已失效，正在重新生成并重试请求')
+
+
+def auth_request(method: str, url: str, **kwargs):
+    """发送登录请求；设备 ID 失效时自动更新并重试一次。"""
+    for attempt in range(2):
+        response = requests.request(
+            method,
+            url,
+            headers=get_login_headers(),
+            timeout=20,
+            **kwargs
+        )
+        result = response.json()
+        message = str(result.get('message') or result.get('msg') or '')
+        if '设备信息无效' not in message or attempt > 0:
+            return result
+        renew_device_id()
+
+    raise RuntimeError('设备ID更新后登录请求仍然失败')
 
 
 def check_auth_response(resp: dict, action: str):
@@ -82,7 +125,7 @@ def show_login_qr(content: str):
 
 
 def create_scan_login():
-    resp = requests.post(SCAN_LOGIN_URL, json={}, headers=HEADER_LOGIN, timeout=20).json()
+    resp = auth_request('post', SCAN_LOGIN_URL, json={})
 
     check_auth_response(resp, '创建扫码登录')
 
@@ -99,9 +142,9 @@ def wait_scan_code(scan_id: str):
     deadline = time.time() + SKYLAND_QR_WAIT
 
     while time.time() < deadline:
-        resp = requests.get(SCAN_STATUS_URL, params={
+        resp = auth_request('get', SCAN_STATUS_URL, params={
             'scanId': scan_id
-        }, headers=HEADER_LOGIN, timeout=20).json()
+        })
 
         status = resp.get('status', resp.get('code'))
         data = resp.get('data') or {}
@@ -126,9 +169,9 @@ def wait_scan_code(scan_id: str):
 
 
 def login_by_scan_code(scan_code: str):
-    resp = requests.post(TOKEN_SCAN_CODE_URL, json={
+    resp = auth_request('post', TOKEN_SCAN_CODE_URL, json={
         'scanCode': scan_code
-    }, headers=HEADER_LOGIN, timeout=20).json()
+    })
 
     check_auth_response(resp, '扫码登录')
 
@@ -151,28 +194,28 @@ def extract_login_token(resp: dict, action: str):
 
 
 def send_phone_code(phone: str):
-    resp = requests.post(SEND_PHONE_CODE_URL, json={
+    resp = auth_request('post', SEND_PHONE_CODE_URL, json={
         'phone': phone,
         'type': 2
-    }, headers=HEADER_LOGIN, timeout=20).json()
+    })
 
     check_auth_response(resp, '发送验证码')
 
 
 def login_by_phone_code(phone: str, code: str):
-    resp = requests.post(TOKEN_PHONE_CODE_URL, json={
+    resp = auth_request('post', TOKEN_PHONE_CODE_URL, json={
         'phone': phone,
         'code': code
-    }, headers=HEADER_LOGIN, timeout=20).json()
+    })
 
     return extract_login_token(resp, '手机号验证码登录')
 
 
 def login_by_password(phone: str, password: str):
-    resp = requests.post(TOKEN_PASSWORD_URL, json={
+    resp = auth_request('post', TOKEN_PASSWORD_URL, json={
         'phone': phone,
         'password': password
-    }, headers=HEADER_LOGIN, timeout=20).json()
+    })
 
     return extract_login_token(resp, '账号密码登录')
 
