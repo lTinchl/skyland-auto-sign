@@ -97,6 +97,10 @@ BROWSER_ENV = {
 _device_id_cache = ''
 
 
+class MissingCryptoDependency(RuntimeError):
+    """当前 Python 环境缺少设备指纹算法所需的 cryptography。"""
+
+
 def _encrypt_des_fields(values: dict):
     result = {}
     for field, value in values.items():
@@ -157,7 +161,7 @@ def _make_smid():
 
 def _generate_device_id():
     if CRYPTO_IMPORT_ERROR is not None:
-        raise RuntimeError(
+        raise MissingCryptoDependency(
             '自动生成设备ID需要cryptography依赖，请先执行: pip install cryptography'
         ) from CRYPTO_IMPORT_ERROR
 

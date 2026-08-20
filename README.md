@@ -14,6 +14,10 @@ pip install -r requirements.txt
 签到接口现在会校验设备信息。脚本会自动向设备指纹服务申请有效的 `dId`，因此
 除 `requests` 外还需要 `cryptography`。
 
+`Auto_Sign.py` 检测到缺少 `cryptography` 时，会使用当前 Python 解释器自动
+安装依赖，并在安装成功后重新启动签到流程。自动安装仅在依赖缺失时执行；如果
+青龙容器没有网络或安装权限，请在依赖管理中手动安装 `cryptography`。
+
 如果希望在终端里直接显示二维码：
 
 ```bash
@@ -156,6 +160,9 @@ SKYLAND_QR_WAIT=180
 
 # 扫码状态查询间隔，单位秒
 SKYLAND_QR_INTERVAL=2
+
+# 缺少cryptography时自动安装；设为0可关闭
+SKYLAND_AUTO_INSTALL_DEPS=1
 
 # 可选：复用已有设备ID；必须是设备指纹服务签发、以B开头的值
 # 留空时脚本会自动生成，不要填写普通UUID

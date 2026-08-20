@@ -22,7 +22,6 @@ from urllib import parse
 import requests
 
 from SecuritySm import (
-    MissingCryptoDependency,
     clear_device_id_cache,
     get_device_id
 )
@@ -512,8 +511,8 @@ def main():
 
     try:
         ensure_device_id()
-    except MissingCryptoDependency as ex:
-        if install_cryptography_and_restart():
+    except RuntimeError as ex:
+        if 'cryptography' in str(ex).lower() and install_cryptography_and_restart():
             return
         error_msg = f'设备ID初始化失败: {ex}'
         logging.error(error_msg, exc_info=True)
