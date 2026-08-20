@@ -14,12 +14,18 @@ import hmac
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from urllib import parse
 
 import requests
 
-from SecuritySm import clear_device_id_cache, get_device_id
+from SecuritySm import (
+    MissingCryptoDependency,
+    clear_device_id_cache,
+    get_device_id
+)
 
 # 尝试导入青龙面板的notify模块，如果不存在则跳过
 try:
@@ -34,6 +40,9 @@ except ImportError:
 SKYLAND_TOKEN = os.getenv('SKYLAND_TOKEN') or os.getenv('TOKEN') or ''
 SKYLAND_NOTIFY = os.getenv('SKYLAND_NOTIFY') or ''
 SKYLAND_DID = os.getenv('SKYLAND_DID') or ''
+SKYLAND_AUTO_INSTALL_DEPS = (
+    os.getenv('SKYLAND_AUTO_INSTALL_DEPS') or '1'
+).strip().lower() not in ('0', 'false', 'no')
 
 # 消息内容
 run_message = ''
@@ -121,6 +130,36 @@ def renew_device_id():
 def is_invalid_device_response(resp: dict):
     message = str(resp.get('message') or resp.get('msg') or '')
     return '设备信息无效' in message
+
+
+def install_cryptography_and_restart():
+    """自动安装设备指纹依赖，成功后用原参数重启当前脚本。"""
+    if not SKYLAND_AUTO_INSTALL_DEPS or os.getenv('SKYLAND_DEPS_INSTALL_ATTEMPTED') == '1':
+        return False
+
+    logging.warning('未检测到cryptography，正在自动安装依赖...')
+    os.environ['SKYLAND_DEPS_INSTALL_ATTEMPTED'] = '1'
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                '-m',
+                'pip',
+                'install',
+                '--disable-pip-version-check',
+                '--no-input',
+                'cryptography>=41'
+            ],
+            check=True,
+            timeout=300
+        )
+    except (OSError, subprocess.SubprocessError) as ex:
+        logging.error(f'cryptography自动安装失败: {ex}')
+        return False
+
+    logging.info('cryptography安装成功，正在重新启动签到脚本')
+    os.execv(sys.executable, [sys.executable, *sys.argv])
+    return True
 
 
 # ==================== 推送通知函数 ====================
@@ -473,6 +512,14 @@ def main():
 
     try:
         ensure_device_id()
+    except MissingCryptoDependency as ex:
+        if install_cryptography_and_restart():
+            return
+        error_msg = f'设备ID初始化失败: {ex}'
+        logging.error(error_msg, exc_info=True)
+        run_message = error_msg
+        send_message('森空岛签到', run_message, SKYLAND_NOTIFY)
+        return
     except Exception as ex:
         error_msg = f'设备ID初始化失败: {ex}'
         logging.error(error_msg, exc_info=True)
